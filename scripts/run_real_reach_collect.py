@@ -50,8 +50,37 @@ def parse_args():
     p.add_argument("--waypoints", type=str, default="data/safe_waypoints.npz",
                    help="safe joint-waypoint pool (make_safe_waypoints.py); missing -> OU fallback")
     p.add_argument("--min-steps", type=int, default=50, help="discard episodes shorter than this")
+    # --- motion softness (keep diverse coverage, move more gently) ---
+    p.add_argument("--soft", action="store_true",
+                   help="gentle-motion preset (max-action 0.4, smooth 0.5, less OU jitter); "
+                        "keeps ~84%% workspace coverage, speed -60%%, jerk -77%%; "
+                        "individual flags below override it")
+    p.add_argument("--max-action", type=float, default=None,
+                   help="cap on |normalized action| per step in (0,1]; lower = slower/softer "
+                        "(default 1.0 = unchanged)")
+    p.add_argument("--action-smooth", type=float, default=None,
+                   help="EMA low-pass on the action in [0,1); higher = smoother, less table "
+                        "shake (default 0.0 = unchanged)")
+    p.add_argument("--ou-sigma", type=float, default=None,
+                   help="exploration jitter std (default 0.3); lower = less jerky")
+    p.add_argument("--ou-mix", type=float, default=None,
+                   help="how much OU jitter is mixed in (default 0.2); lower = less jerky")
     p.add_argument("--dry-run", action="store_true", help="mock arm + dummy camera, no hardware")
     return p.parse_args()
+
+
+def resolve_softness(args):
+    """Combine the --soft preset with any explicit overrides.
+    Returns (max_action, smooth, ou_sigma, ou_mix)."""
+    if args.soft:
+        base = dict(max_action=0.4, smooth=0.5, ou_sigma=0.15, ou_mix=0.1)
+    else:
+        base = dict(max_action=1.0, smooth=0.0, ou_sigma=0.3, ou_mix=0.2)
+    if args.max_action    is not None: base["max_action"] = args.max_action
+    if args.action_smooth is not None: base["smooth"]     = args.action_smooth
+    if args.ou_sigma      is not None: base["ou_sigma"]   = args.ou_sigma
+    if args.ou_mix        is not None: base["ou_mix"]      = args.ou_mix
+    return base["max_action"], base["smooth"], base["ou_sigma"], base["ou_mix"]
 
 
 def main():
@@ -74,10 +103,14 @@ def main():
 
     wp = load_waypoints(args.waypoints)
     print(f"[*] exploration: {('%d safe waypoints' % len(wp)) if wp is not None else 'OU fallback (no pool)'}")
+    max_action, smooth, ou_sigma, ou_mix = resolve_softness(args)
+    print(f"[*] motion: max_action={max_action} smooth={smooth} ou_sigma={ou_sigma} ou_mix={ou_mix}"
+          f"{'  (SOFT preset)' if args.soft else ''}")
     collector = RealReachCollector(
         arm=arm, camera=camera,
         action_scale=args.action_scale, control_hz=args.control_hz,
         seed=args.seed, waypoints=wp, min_steps=args.min_steps,
+        max_action=max_action, smooth=smooth, ou_sigma=ou_sigma, ou_mix=ou_mix,
     )
 
     dataset = {}

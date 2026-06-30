@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # xArm6 Sim2Real + DIFF-IL 사용자 가이드
 
 이 문서 하나로 전체 프로젝트를 **이해하고 실행**할 수 있도록 정리했습니다. 처음 보는 사람도
@@ -287,3 +288,7 @@ python scripts/deploy_real.py --task reach --model <policy.zip> --speed 30 --act
 > 시뮬에서 전문가를 학습하고 몇 개의 고정 데이터셋을 모은 뒤, **실제 팔**이 작은 state 정책을
 > 온라인으로 돌리는 동안 **GPU 서버**가 *이미지*로 모방 점수를 매겨 더 나은 정책을 계속 보내준다 —
 > 전부 ZeroMQ로, 안전은 로봇에 고정된 채로.
+=======
+# DIFFIL-xarm6
+test- sim-2-real applications for DIFFIL algorithm
+>>>>>>> fcc9d72c8b7c60788b689b07117e46d865521b77

@@ -33,6 +33,20 @@ from dataset_conform import check_demo_npz
 from explore import WaypointBabbler, SafetyRecovery, load_waypoints
 
 
+def resolve_softness(args):
+    """Combine the --soft preset with explicit overrides -> (max_action, smooth, ou_sigma, ou_mix).
+    Defaults reproduce the original (un-softened) motion exactly."""
+    if getattr(args, "soft", False):
+        base = dict(max_action=0.4, smooth=0.5, ou_sigma=0.15, ou_mix=0.1)
+    else:
+        base = dict(max_action=1.0, smooth=0.0, ou_sigma=0.3, ou_mix=0.2)
+    if args.max_action    is not None: base["max_action"] = args.max_action
+    if args.action_smooth is not None: base["smooth"]     = args.action_smooth
+    if args.ou_sigma      is not None: base["ou_sigma"]   = args.ou_sigma
+    if args.ou_mix        is not None: base["ou_mix"]      = args.ou_mix
+    return base["max_action"], base["smooth"], base["ou_sigma"], base["ou_mix"]
+
+
 def load_policy(algo: str, model_path: str):
     """Return a fn obs->action using an SB3 model (lazy import; server only)."""
     if algo.lower() == "ppo":
@@ -64,9 +78,14 @@ def collect(args):
         a_scale = float(env.env.unwrapped.action_scale)
         wp = load_waypoints(args.waypoints)
         print(f"[*] random explore: {('%d safe waypoints' % len(wp)) if wp is not None else 'OU fallback'}")
+        max_action, smooth, ou_sigma, ou_mix = resolve_softness(args)
+        print(f"[*] motion: max_action={max_action} smooth={smooth} ou_sigma={ou_sigma} "
+              f"ou_mix={ou_mix}{'  (SOFT preset)' if args.soft else ''}")
         babbler = WaypointBabbler(a_scale, JOINT_LIMITS_LOW, JOINT_LIMITS_HIGH, HOME_QPOS,
-                                  waypoints=wp, seed=args.seed)
-        recovery = SafetyRecovery(SAFE_LOW, SAFE_HIGH, HOME_QPOS, a_scale, margin=0.03)
+                                  waypoints=wp, ou_sigma=ou_sigma, ou_mix=ou_mix,
+                                  max_action=max_action, smooth=smooth, seed=args.seed)
+        recovery = SafetyRecovery(SAFE_LOW, SAFE_HIGH, HOME_QPOS, a_scale, margin=0.03,
+                                  max_action=max_action)
 
     OBS, NOBS, ACT, REW, DON, IMS, IDS, STEP = [], [], [], [], [], [], [], []
     ep, total = 0, 0
@@ -125,6 +144,15 @@ def main():
     ap.add_argument("--out-dir", default="prior_data", help="expert_data (B^SE) or prior_data (B^SR/B^TR)")
     ap.add_argument("--waypoints", type=str, default="data/safe_waypoints.npz",
                     help="safe joint-waypoint pool (make_safe_waypoints.py); missing -> OU fallback")
+    # motion softness (random mode only): keep diverse coverage, move more gently
+    ap.add_argument("--soft", action="store_true",
+                    help="gentle-motion preset (max-action 0.4, smooth 0.5, less OU jitter)")
+    ap.add_argument("--max-action", type=float, default=None,
+                    help="cap on |action| per step in (0,1]; lower=softer (default 1.0)")
+    ap.add_argument("--action-smooth", type=float, default=None,
+                    help="EMA low-pass on the action in [0,1); higher=smoother (default 0.0)")
+    ap.add_argument("--ou-sigma", type=float, default=None, help="jitter std (default 0.3)")
+    ap.add_argument("--ou-mix", type=float, default=None, help="jitter mix (default 0.2)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
     collect(args)

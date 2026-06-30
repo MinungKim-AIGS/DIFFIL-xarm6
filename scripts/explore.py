@@ -30,7 +30,8 @@ class WaypointBabbler:
 
     def __init__(self, action_scale, joint_low, joint_high, home_qpos,
                  waypoints=None, hold_steps=(15, 50), reach_tol=0.04,
-                 ou_theta=0.15, ou_sigma=0.3, ou_mix=0.2, seed=0):
+                 ou_theta=0.15, ou_sigma=0.3, ou_mix=0.2,
+                 max_action=1.0, smooth=0.0, seed=0):
         self.A = float(action_scale)
         self.jl = np.asarray(joint_low, np.float32)
         self.jh = np.asarray(joint_high, np.float32)
@@ -39,8 +40,16 @@ class WaypointBabbler:
         self.hold_lo, self.hold_hi = hold_steps
         self.tol = float(reach_tol)
         self.theta, self.sigma, self.ou_mix = ou_theta, ou_sigma, ou_mix
+        # Softness knobs. Defaults (max_action=1.0, smooth=0.0) reproduce the
+        # original behavior EXACTLY:
+        #   max_action: cap on |action| per step  -> slower joint motion (gentler).
+        #   smooth:     EMA low-pass on the output -> fewer abrupt changes (less
+        #               jerk, so an unfixed table shakes less).
+        self.max_a = float(np.clip(max_action, 1e-3, 1.0))
+        self.smooth = float(np.clip(smooth, 0.0, 0.99))
         self.rng = np.random.default_rng(seed)
         self._ou = np.zeros(6, np.float32)
+        self._a_prev = np.zeros(6, np.float32)
         self._target = None
         self._hold = 0
         self._t = 0
@@ -57,6 +66,7 @@ class WaypointBabbler:
 
     def reset(self, q):
         self._ou[:] = 0.0
+        self._a_prev[:] = 0.0
         self._new_target(q)
 
     def act(self, q) -> np.ndarray:
@@ -69,7 +79,10 @@ class WaypointBabbler:
         self._t += 1
         a = np.clip((self._target - q) / self.A, -1.0, 1.0)        # move toward target
         self._ou = (1.0 - self.theta) * self._ou + self.sigma * self.rng.standard_normal(6).astype(np.float32)
-        a = np.clip(a + self.ou_mix * self._ou, -1.0, 1.0)         # small jitter for richer dynamics
+        a = a + self.ou_mix * self._ou                             # small jitter for richer dynamics
+        a = np.clip(a, -self.max_a, self.max_a)                    # speed cap (gentler motion)
+        a = self.smooth * self._a_prev + (1.0 - self.smooth) * a   # EMA low-pass (less jerk)
+        self._a_prev = a
         return a.astype(np.float32)
 
 
@@ -78,11 +91,13 @@ class SafetyRecovery:
     actually apply: the proposed action while the TCP is inside a margin'd safe box,
     otherwise a home-ward override (episode keeps running)."""
 
-    def __init__(self, safe_low, safe_high, home_qpos, action_scale, margin=0.03):
+    def __init__(self, safe_low, safe_high, home_qpos, action_scale, margin=0.03,
+                 max_action=1.0):
         self.lo = np.asarray(safe_low, np.float32) + margin
         self.hi = np.asarray(safe_high, np.float32) - margin
         self.home = np.asarray(home_qpos, np.float32)
         self.A = float(action_scale)
+        self.max_a = float(np.clip(max_action, 1e-3, 1.0))   # gentle home-ward correction too
 
     def in_safe(self, ee) -> bool:
         ee = np.asarray(ee, np.float32)
@@ -91,7 +106,7 @@ class SafetyRecovery:
     def wrap(self, q, ee, action):
         if self.in_safe(ee):
             return np.asarray(action, np.float32), False
-        a = np.clip((self.home - np.asarray(q, np.float32)) / self.A, -1.0, 1.0)
+        a = np.clip((self.home - np.asarray(q, np.float32)) / self.A, -self.max_a, self.max_a)
         return a.astype(np.float32), True
 
 

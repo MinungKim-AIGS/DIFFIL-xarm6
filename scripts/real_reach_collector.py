@@ -242,7 +242,9 @@ class RealReachCollector:
     def __init__(self, arm, camera, action_scale: float = ACTION_SCALE,
                  control_hz: float = CONTROL_HZ, past_frames: int = PAST_FRAMES,
                  seed: int | None = None, waypoints=None, recovery_margin: float = 0.03,
-                 hold_steps=(15, 50), min_steps: int = 50):
+                 hold_steps=(15, 50), min_steps: int = 50,
+                 max_action: float = 1.0, smooth: float = 0.0,
+                 ou_sigma: float = 0.3, ou_mix: float = 0.2):
         self.arm = arm
         self.camera = camera
         self.action_scale = float(action_scale)
@@ -250,11 +252,13 @@ class RealReachCollector:
         self.past_frames = past_frames
         self.rng = np.random.default_rng(seed)
         self.min_steps = int(min_steps)
+        # max_action / smooth control how gently the arm moves (see explore.py).
         self.babbler = WaypointBabbler(action_scale, JOINT_LIMITS_LOW, JOINT_LIMITS_HIGH,
                                        HOME_QPOS, waypoints=waypoints, hold_steps=hold_steps,
-                                       seed=(seed or 0))
+                                       ou_sigma=ou_sigma, ou_mix=ou_mix,
+                                       max_action=max_action, smooth=smooth, seed=(seed or 0))
         self.recovery = SafetyRecovery(SAFE_LOW, SAFE_HIGH, HOME_QPOS, action_scale,
-                                       margin=recovery_margin)
+                                       margin=recovery_margin, max_action=max_action)
 
     # --- low-level reads ---
     def read_q(self) -> np.ndarray:
