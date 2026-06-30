@@ -1,0 +1,63 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+*.csv
+runs/
+tb/
+.DS_Store
+
+# Ignore all outputs by default ...
+outputs/*
+*.zip
+
+# ... but keep:
+#   - the report
+#   - the GIFs embedded in README
+#   - the final models for the 4 trained policies (PPO, PPO+DR, SAC, SAC+DR)
+!outputs/report.md
+!outputs/gif/
+outputs/gif/*
+!outputs/gif/ppo_v2_grid_tour_small.gif
+!outputs/gif/ppo_v2_rollout.gif
+!outputs/gif/ppo_dr_grid_tour_small.gif
+!outputs/gif/ppo_dr_rollout.gif
+!outputs/gif/sac_v3_grid_tour_small.gif
+!outputs/gif/sac_v3_rollout_best.gif
+!outputs/gif/sac_dr_grid_tour_small.gif
+!outputs/gif/sac_dr_rollout.gif
+!outputs/gif/xarm-real-ppo.gif
+
+!outputs/reach_ppo_v2/
+outputs/reach_ppo_v2/*
+!outputs/reach_ppo_v2/final_model.zip
+
+!outputs/reach_ppo_dr/
+outputs/reach_ppo_dr/*
+!outputs/reach_ppo_dr/final_model.zip
+
+!outputs/reach_sac_v3/
+outputs/reach_sac_v3/*
+!outputs/reach_sac_v3/final_model.zip
+!outputs/reach_sac_v3/best_model.zip
+
+!outputs/reach_sac_dr/
+outputs/reach_sac_dr/*
+!outputs/reach_sac_dr/final_model.zip
+!outputs/reach_sac_dr/best_model.zip
+
+# --- DIFF-IL / sim2real additions ---
+.idea/
+# IDE / OS
+.vscode/
+
+# Large datasets — regenerate, or copy out-of-band.
+# (GitHub REJECTS any single file > 100 MB; DIFF-IL npz are hundreds of MB.)
+*.npz
+prior_data/
+expert_data/
+data/real_reach/
+data/d3il_random_xarm6/
+# ...but keep the small safe-waypoint pool (the robot laptop needs it; no mujoco there)
+!data/safe_waypoints.npz

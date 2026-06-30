@@ -1,0 +1,112 @@
+<!-- xArm6 MJCF (MuJoCo)
+     Joint limits and kinematics from UFactory xArm6 spec.
+     Meshes loaded from ./meshes/ (link1..link6.stl, base.stl).
+     End-effector: simple 2-finger parallel gripper modeled as 2 sliding fingers.
+     Coordinate convention: base at world origin, +Z up.
+-->
+<mujoco model="xarm6">
+  <compiler angle="radian" meshdir="xarm6/meshes" autolimits="true"/>
+  <option timestep="0.002" integrator="implicitfast" gravity="0 0 -9.81"/>
+
+  <default>
+    <default class="xarm6">
+      <joint axis="0 0 1" damping="1.0" frictionloss="0.1" armature="0.01"/>
+      <position kp="500" kv="50" forcerange="-50 50"/>
+      <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0" group="2" rgba="0.95 0.95 0.95 1"/>
+      </default>
+      <default class="collision">
+        <geom type="mesh" group="3" rgba="0.5 0.5 0.5 0.3" condim="4"
+              solref="0.005 1" solimp="0.95 0.99 0.001"/>
+      </default>
+    </default>
+    <default class="gripper">
+      <joint type="slide" axis="1 0 0" damping="5" frictionloss="1"/>
+      <position kp="200" kv="20" forcerange="-50 50"/>
+      <geom type="box" rgba="0.2 0.2 0.2 1" condim="4" friction="2 0.05 0.001"
+            solref="0.005 1" solimp="0.95 0.99 0.001"/>
+    </default>
+  </default>
+
+  <asset>
+    <mesh name="base"  file="base.stl"  scale="1 1 1"/>
+    <mesh name="link1" file="link1.stl" scale="1 1 1"/>
+    <mesh name="link2" file="link2.stl" scale="1 1 1"/>
+    <mesh name="link3" file="link3.stl" scale="1 1 1"/>
+    <mesh name="link4" file="link4.stl" scale="1 1 1"/>
+    <mesh name="link5" file="link5.stl" scale="1 1 1"/>
+    <mesh name="link6" file="link6.stl" scale="1 1 1"/>
+  </asset>
+
+  <worldbody>
+    <body name="link_base" pos="0 0 0" childclass="xarm6">
+      <geom mesh="base" class="visual"/>
+      <geom mesh="base" class="collision"/>
+
+      <body name="link1" pos="0 0 0.267">
+        <joint name="joint1" range="-6.283 6.283"/>
+        <geom mesh="link1" class="visual"/>
+        <geom mesh="link1" class="collision"/>
+
+        <body name="link2" quat="0.707107 -0.707107 0 0">
+          <joint name="joint2" range="-2.059 2.094"/>
+          <geom mesh="link2" class="visual"/>
+          <geom mesh="link2" class="collision"/>
+
+          <body name="link3" pos="0.0535 -0.2845 0">
+            <joint name="joint3" range="-3.927 0.191"/>
+            <geom mesh="link3" class="visual"/>
+            <geom mesh="link3" class="collision"/>
+
+            <body name="link4" pos="0.0775 0.3425 0" quat="0.707107 -0.707107 0 0">
+              <joint name="joint4" range="-6.283 6.283"/>
+              <geom mesh="link4" class="visual"/>
+              <geom mesh="link4" class="collision"/>
+
+              <body name="link5" quat="0.707107 0.707107 0 0">
+                <joint name="joint5" range="-1.693 3.142"/>
+                <geom mesh="link5" class="visual"/>
+                <geom mesh="link5" class="collision"/>
+
+                <body name="link6" pos="0.076 0.097 0" quat="0.707107 -0.707107 0 0">
+                  <joint name="joint6" range="-6.283 6.283"/>
+                  <geom mesh="link6" class="visual"/>
+                  <geom mesh="link6" class="collision"/>
+
+                  <!-- Simple parallel gripper attached at flange (+Z of link6) -->
+                  <body name="gripper_base" pos="0 0 0.03">
+                    <geom type="box" size="0.04 0.04 0.025" pos="0 0 0"
+                          rgba="0.3 0.3 0.35 1" class="visual"/>
+
+                    <body name="finger_left" pos="-0.0 0 0.045">
+                      <joint name="finger_left_joint" class="gripper" range="0 0.04"/>
+                      <geom size="0.005 0.015 0.025" pos="-0.02 0 0.025" class="gripper"/>
+                    </body>
+                    <body name="finger_right" pos="0 0 0.045">
+                      <joint name="finger_right_joint" class="gripper" range="-0.04 0"/>
+                      <geom size="0.005 0.015 0.025" pos="0.02 0 0.025" class="gripper"/>
+                    </body>
+
+                    <!-- TCP site for IK/observation -->
+                    <site name="ee_site" pos="0 0 0.09" size="0.005" rgba="1 0 0 1"/>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position class="xarm6" name="act1" joint="joint1" ctrlrange="-6.283 6.283"/>
+    <position class="xarm6" name="act2" joint="joint2" ctrlrange="-2.059 2.094"/>
+    <position class="xarm6" name="act3" joint="joint3" ctrlrange="-3.927 0.191"/>
+    <position class="xarm6" name="act4" joint="joint4" ctrlrange="-6.283 6.283"/>
+    <position class="xarm6" name="act5" joint="joint5" ctrlrange="-1.693 3.142"/>
+    <position class="xarm6" name="act6" joint="joint6" ctrlrange="-6.283 6.283"/>
+    <position class="gripper" name="act_grip_l" joint="finger_left_joint"  ctrlrange="0 0.04"/>
+    <position class="gripper" name="act_grip_r" joint="finger_right_joint" ctrlrange="-0.04 0"/>
+  </actuator>
+</mujoco>

@@ -1,0 +1,14 @@
+# Simulation / data-prep venv — train the sim expert, collect B^SE / B^SR,
+# deploy/eval. This is the existing xarm6 stack (gymnasium + SB3 + mujoco),
+# kept SEPARATE from the TF learner venv.
+mujoco>=3.2.0
+gymnasium>=0.29.0
+stable-baselines3>=2.3.0
+numpy>=1.24
+torch>=2.1
+tensorboard>=2.14
+opencv-python
+# transport (only if this machine also seeds/streams data):
+pyzmq
+msgpack
+lz4

@@ -1,0 +1,18 @@
+# DIFF-IL learner (GPU server) venv — trains models + SAC policy from data only.
+#
+# This is the EXISTING DIFF-IL repo environment (e.g. TF 2.5). The learner is
+# gymnasium-free by default (build_diffil(use_source_env=False)), so you do NOT
+# need gymnasium / mujoco / stable-baselines3 here — only the DIFF-IL TF stack
+# plus the ZeroMQ transport. Keep this isolated from the sim venv.
+#
+# Already provided by your DIFF-IL repo (do not re-pin if it works):
+#   tensorflow~=2.5
+#   tensorflow-probability     # version matching your TF 2.5
+#   numpy, matplotlib, wandb
+#   (the DIFF-IL repo modules: gail_models_cycle, disentangail_models_cycle,
+#    sac_models, buffers_cycle, samplers, utils  — on PYTHONPATH)
+#
+# Add only the transport:
+pyzmq
+msgpack
+lz4

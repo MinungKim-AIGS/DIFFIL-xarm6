@@ -1,0 +1,9 @@
+# Robot laptop (actor) venv — runs the policy on the real xArm6.
+# Pure-numpy policy: NO tensorflow, NO gymnasium, NO mujoco, NO torch.
+numpy>=1.21
+opencv-python
+pyzmq
+msgpack
+lz4
+pyrealsense2
+xArm-Python-SDK
