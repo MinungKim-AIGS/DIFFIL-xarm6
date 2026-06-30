@@ -35,7 +35,10 @@ def collect_episode(env, actor, ep_id: int, explore_noise: float):
         act = actor.get_action(ob, explore_noise)
         nob, rew, done, info = env.step(act)
         im = env.get_ims()
-        obs_l.append(ob); act_l.append(act); nobs_l.append(nob)
+        # store the EXECUTED action (post clip + EMA filter + safety), not the raw
+        # policy output, so the off-policy buffer is consistent with what the arm did.
+        applied = info.get("applied_action", act)
+        obs_l.append(ob); act_l.append(applied); nobs_l.append(nob)
         rew_l.append(rew); don_l.append(done); ims_l.append(im)
         ob = nob
     T = len(act_l)

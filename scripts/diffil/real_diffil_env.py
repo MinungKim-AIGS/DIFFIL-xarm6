@@ -100,7 +100,12 @@ class RealRobotEnv:
         ee = self._read_ee()
 
         done = False
-        info = {"is_success": float(np.linalg.norm(self.target - ee) < 0.03)}
+        # `act` is already the post-constraint action (clipped + EMA-filtered) that
+        # is actually commanded to the arm. Expose it so the actor stores the
+        # EXECUTED action in the buffer, not the policy's raw proposal — otherwise
+        # off-policy SAC learns from (s, a_raw, s') while the robot ran a_executed.
+        info = {"is_success": float(np.linalg.norm(self.target - ee) < 0.03),
+                "applied_action": act.copy()}
 
         # hard safe-zone guard
         if not (bool(np.all(ee >= rrc.SAFE_LOW)) and bool(np.all(ee <= rrc.SAFE_HIGH))):

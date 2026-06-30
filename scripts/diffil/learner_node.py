@@ -104,6 +104,10 @@ class RealLearner:
             target_learner_seed=a.target_seed, action_dim=a.action_dim,
             use_source_env=a.use_source_env)
         self.gail, self.agent_buffer, self.l_agent, self.sampler = build_diffil(cfg)
+        try:
+            self.obs_dim = int(self.agent_buffer.obs.shape[1])
+        except Exception:
+            self.obs_dim = int(a.action_dim)     # fallback; B^TL normally carries obs
         print("[learner] DIFF-IL graph + buffers built (B^SE/B^SR/B^TR loaded, B^TL seeded)")
 
     def feed_target(self, max_msgs: int = 256) -> int:
@@ -119,7 +123,14 @@ class RealLearner:
         return n
 
     def publish_actor(self):
-        w = self._weight_io.export_actor(self.l_agent._act, version=self.version)
+        import tensorflow as tf
+        act = self.l_agent._act
+        # Keras Dense layers are lazy: their kernels exist only after the actor is
+        # called once. v0 is published BEFORE any training, so force-build here if
+        # the weights are still empty (else export_actor's get_weights() -> []).
+        if not act._act_layers[-1].get_weights():
+            act.get_action(tf.zeros([1, getattr(self, "obs_dim", 21)], tf.float32), 0.0)
+        w = self._weight_io.export_actor(act, version=self.version)
         self.pub.publish(w)
 
     def run(self):

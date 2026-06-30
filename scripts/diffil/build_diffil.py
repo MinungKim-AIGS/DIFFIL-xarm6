@@ -225,10 +225,34 @@ def build_diffil(cfg: DiffilConfig):
                         random_epi=cfg.random_epi_limit)
 
     # ---- online target buffer B^TL, seeded with real-random rollouts ----
+    # IMPORTANT: LearnerAgentReplayBuffer uses ReplayBuffer.get_balance_batch_
+    # nsteps_with_step, which builds indices from self.buffer_size and ASSUMES the
+    # buffer is completely full (the reference pre-fills 50000 samples). If
+    # buffer_size > the number of samples actually loaded, those indices run off the
+    # end of self.obs -> "IndexError: index N out of bounds". So we size the B^TL
+    # buffer to the seed we really have (it then stays full as the actor adds data,
+    # since add() evicts oldest beyond buffer_size).
+    tl_seed = load_learner_trajectories(cfg.target_learner_seed, cfg.prior_file_location,
+                                        visual_data=True, load_ids=True,
+                                        max_demos=cfg.l_buffer_size)
+    tl_n = int(tl_seed["obs"].shape[0])
+    eff_buffer = min(int(cfg.l_buffer_size), tl_n)
+    if eff_buffer != int(cfg.l_buffer_size):
+        print(f"[build_diffil] B^TL buffer_size {cfg.l_buffer_size} -> {eff_buffer} "
+              f"(matched to seed samples; the base sampler assumes a full buffer)")
     agent_buffer = LearnerAgentReplayBuffer(
-        gail, cfg.l_buffer_size, cfg.episode_limit, reward_noise=cfg.d_rew_noise,
-        initial_data=load_learner_trajectories(cfg.target_learner_seed, cfg.prior_file_location,
-                                               visual_data=True, load_ids=True,
-                                               max_demos=cfg.l_buffer_size))
+        gail, eff_buffer, cfg.episode_limit, reward_noise=cfg.d_rew_noise,
+        initial_data=tl_seed)
+
+    # ---- force-build the SAC actor so it can be exported BEFORE training ----
+    # make_actor's Dense layers are lazy: kernels are created only on the first
+    # call. learner_node publishes actor v0 before any train step, so without this
+    # warm call export_actor() sees empty get_weights() and crashes. The policy is
+    # state-based, so we build it on a zero state vector (obs dim taken from B^TL).
+    try:
+        obs_dim = int(agent_buffer.obs.shape[1])
+    except Exception:
+        obs_dim = int(cfg.action_dim)            # last-resort fallback; B^TL always has obs
+    l_agent._act.get_action(tf.zeros([1, obs_dim], tf.float32), 0.0)
 
     return gail, agent_buffer, l_agent, sampler
