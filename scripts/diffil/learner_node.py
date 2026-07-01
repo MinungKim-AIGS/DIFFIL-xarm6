@@ -94,6 +94,17 @@ class RealLearner:
         from build_diffil import DiffilConfig, build_diffil
         self._weight_io = weight_io
         a = self.args
+
+        # Real wandb run so DisentanGAIL's analysis/loss logging (reconstructions,
+        # fake samples, losses, etc.) actually lands in wandb instead of the no-op
+        # _NullWandb. Omit --wandb to keep it off (local plt.savefig still writes).
+        run_wandb = None
+        if a.wandb:
+            import wandb
+            run_wandb = wandb.init(project=a.wandb_project, name=a.wandb_name,
+                                   entity=a.wandb_entity, config=vars(a))
+            print(f"[learner] wandb logging enabled (project={a.wandb_project})")
+
         cfg = DiffilConfig(
             env_id=a.env_id, render_camera=a.render_camera, episode_limit=a.episode_limit,
             random_epi_limit=a.episode_limit, l_batch_size=a.l_batch_size, RL_num=a.rl_updates,
@@ -102,7 +113,7 @@ class RealLearner:
             prior_file_location=a.prior_file_location, env_name=a.env_name,
             source_random_location=a.source_random, target_random_location=a.target_random,
             target_learner_seed=a.target_seed, action_dim=a.action_dim,
-            use_source_env=a.use_source_env)
+            use_source_env=a.use_source_env, run_wandb=run_wandb)
         self.gail, self.agent_buffer, self.l_agent, self.sampler = build_diffil(cfg)
         try:
             self.obs_dim = int(self.agent_buffer.obs.shape[1])
@@ -110,17 +121,25 @@ class RealLearner:
             self.obs_dim = int(a.action_dim)     # fallback; B^TL normally carries obs
         print("[learner] DIFF-IL graph + buffers built (B^SE/B^SR/B^TR loaded, B^TL seeded)")
 
-    def feed_target(self, max_msgs: int = 256) -> int:
-        """Drain actor trajectories into the online learner buffer B^TL."""
-        n = 0
-        for t in self.rx.drain(max_msgs=max_msgs):
-            # agent_buffer is a LearnerAgentReplayBuffer (VisualReplayBuffer.add
-            # consumes obs/nobs/act/rew/don/ims/n). Rewards are recomputed inside
-            # the buffer via the label nets at sample time, so the actor's rew is
-            # only a placeholder.
+    def feed_target(self, max_new: int = 1000, max_msgs: int = 4096) -> int:
+        """Drain the WHOLE actor queue (so no backlog builds up / overflows), but add
+        only the FRESHEST up to `max_new` steps into B^TL. This bounds how much new
+        O^TL each policy version ingests (e.g. 1000) instead of dumping a large
+        backlog accumulated during a slow train round. Older queued steps are dropped.
+
+        agent_buffer is a LearnerAgentReplayBuffer (VisualReplayBuffer.add consumes
+        obs/nobs/act/rew/don/ims/n). Rewards are recomputed inside the buffer via the
+        label nets at sample time, so the actor's rew is only a placeholder."""
+        trajs = self.rx.drain(max_msgs=max_msgs)
+        kept, total = [], 0
+        for t in reversed(trajs):                 # newest first
+            kept.append(t)
+            total += int(t["n"])
+            if total >= max_new:
+                break
+        for t in reversed(kept):                  # add back in chronological order
             self.agent_buffer.add({k: t[k] for k in ("obs", "nobs", "act", "rew", "don", "ims", "n")})
-            n += t["n"]
-        return n
+        return sum(int(t["n"]) for t in kept)
 
     def publish_actor(self):
         import tensorflow as tf
@@ -139,7 +158,7 @@ class RealLearner:
         self.publish_actor()                     # send v0 so the actor can start
         a = self.args
         while True:
-            added = self.feed_target()
+            added = self.feed_target(max_new=a.max_new_steps)
             if added < a.min_new_steps:           # wait for enough fresh target data
                 time.sleep(0.1); continue
             # one DIFF-IL training round (model + RL), identical call to the reference
@@ -164,11 +183,19 @@ def main():
     ap.add_argument("--publish-every", type=int, default=1, help="[mock] rounds between publishes")
     # real-mode DIFF-IL knobs (passed through to gail.train / build)
     ap.add_argument("--min-new-steps", type=int, default=200)
+    ap.add_argument("--max-new-steps", type=int, default=1000,
+                    help="cap the FRESH O^TL steps ingested per policy version (drops "
+                         "older backlog so each version changes by at most this many)")
     ap.add_argument("--l-batch-size", type=int, default=256)
     ap.add_argument("--rl-updates", type=int, default=1000)
     ap.add_argument("--model-updates", type=int, default=500)
     ap.add_argument("--d-batch", type=int, default=64)
     ap.add_argument("--sampling-alpha", type=float, default=0.0)
+    # wandb logging (DisentanGAIL analysis: reconstructions, fake samples, losses)
+    ap.add_argument("--wandb", action="store_true", help="log DIFF-IL analysis + losses to wandb")
+    ap.add_argument("--wandb-project", default="diffil-xarm6")
+    ap.add_argument("--wandb-name", default=None)
+    ap.add_argument("--wandb-entity", default=None)
     # source env + dataset locations (real mode)
     ap.add_argument("--env-id", default="XArm6Reach-v0")
     ap.add_argument("--render-camera", default="front")

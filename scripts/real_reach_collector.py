@@ -56,7 +56,7 @@ GOAL_FIXED = np.array([0.5119, -0.2945, 0.3354], dtype=np.float32)
 
 # Real xArm6 safe zone (== reach_env.SAFE_LOW/HIGH), meters
 SAFE_LOW  = np.array([0.00, -0.54, 0.18], dtype=np.float32)
-SAFE_HIGH = np.array([0.57,  0.55, 0.60], dtype=np.float32)
+SAFE_HIGH = np.array([0.57,  0.55, 0.65], dtype=np.float32)   # z raised a bit for headroom
 SAFE_ZONE_PENALTY = 1.0
 
 ACTION_SCALE = 0.01          # rad/step per joint. Intentionally LOWER than sim (0.05):

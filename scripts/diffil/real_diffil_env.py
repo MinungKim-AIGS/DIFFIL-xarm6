@@ -44,7 +44,8 @@ class RealRobotEnv:
     def __init__(self, ip: str, front_serial: str | None = None, dry_run: bool = False,
                  action_scale: float = rrc.ACTION_SCALE, control_hz: float = rrc.CONTROL_HZ,
                  action_filter: float = 0.3, max_steps: int = 200, home_jitter: float = 0.05,
-                 past_frames: int = rrc.PAST_FRAMES, img_size=rrc.IMG_SIZE, seed: int = 0):
+                 past_frames: int = rrc.PAST_FRAMES, img_size=rrc.IMG_SIZE, seed: int = 0,
+                 safe_margin: float = 0.03):
         self.arm = rrc.open_arm(ip, dry_run=dry_run)
         self.camera = rrc.DummyCamera() if (dry_run or not front_serial) \
             else rrc.RealSenseCamera(front_serial)
@@ -53,6 +54,7 @@ class RealRobotEnv:
         self.action_filter = float(action_filter)
         self.max_steps = int(max_steps)
         self.home_jitter = float(home_jitter)
+        self.safe_margin = float(safe_margin)   # steer home this far INSIDE the safe box
         self.past_frames = past_frames
         self.img_size = img_size
         self.target = rrc.GOAL_FIXED.copy()
@@ -100,30 +102,34 @@ class RealRobotEnv:
         ee = self._read_ee()
 
         done = False
-        # `act` is already the post-constraint action (clipped + EMA-filtered) that
-        # is actually commanded to the arm. Expose it so the actor stores the
-        # EXECUTED action in the buffer, not the policy's raw proposal — otherwise
+        # NON-TERMINATING safe-zone recovery (Option A): if the TCP is near/outside the
+        # margin'd safe box, override the action with a home-ward move and KEEP the
+        # episode running -> FIXED episode length even on safety events (mirrors the
+        # collector's explore.SafetyRecovery). Only genuine hardware faults (below)
+        # end the episode early. `act` becomes the actual EXECUTED action.
+        lo = rrc.SAFE_LOW + self.safe_margin
+        hi = rrc.SAFE_HIGH - self.safe_margin
+        if not (bool(np.all(ee >= lo)) and bool(np.all(ee <= hi))):
+            act = np.clip((rrc.HOME_QPOS - q) / self.action_scale, -1.0, 1.0)   # steer home
+            print(f"  [SAFETY] TCP {np.round(ee,3)} near/left safe zone - steering home (episode continues)")
+
+        # Expose the EXECUTED action (post EMA + safety override) so the actor stores
+        # what the robot actually ran, not the policy's raw proposal — otherwise
         # off-policy SAC learns from (s, a_raw, s') while the robot ran a_executed.
         info = {"is_success": float(np.linalg.norm(self.target - ee) < 0.03),
                 "applied_action": act.copy()}
 
-        # hard safe-zone guard
-        if not (bool(np.all(ee >= rrc.SAFE_LOW)) and bool(np.all(ee <= rrc.SAFE_HIGH))):
-            print(f"  [SAFETY] TCP {np.round(ee,3)} left safe zone - ending episode")
-            self._stopped = True
-            done = True
+        target_q = np.clip(q + act * self.action_scale, rrc.JOINT_LIMITS_LOW, rrc.JOINT_LIMITS_HIGH)
+        ret = self.arm.set_servo_angle_j(angles=target_q.tolist(), is_radian=True)
+        if ret != 0:
+            print(f"  warn: set_servo_angle_j ret={ret} - ending episode")
+            self._stopped = True; done = True
         else:
-            target_q = np.clip(q + act * self.action_scale, rrc.JOINT_LIMITS_LOW, rrc.JOINT_LIMITS_HIGH)
-            ret = self.arm.set_servo_angle_j(angles=target_q.tolist(), is_radian=True)
-            if ret != 0:
-                print(f"  warn: set_servo_angle_j ret={ret} - ending episode")
+            err, _ = rrc.arm_fault(self.arm)
+            if err != 0:
+                print(f"  [FAULT] error_code={err} - clearing + ending episode")
+                self.arm.clean_error(); self.arm.clean_warn()
                 self._stopped = True; done = True
-            else:
-                err, _ = rrc.arm_fault(self.arm)
-                if err != 0:
-                    print(f"  [FAULT] error_code={err} - clearing + ending episode")
-                    self.arm.clean_error(); self.arm.clean_warn()
-                    self._stopped = True; done = True
 
         # pace control loop
         dt = time.time() - t0
