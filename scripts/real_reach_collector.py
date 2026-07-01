@@ -49,14 +49,19 @@ HOME_QPOS         = np.array([0.0, -0.3, -1.2, 0.0, 1.5, 0.0], dtype=np.float32)
 WORKSPACE_LOW  = np.array([0.44, -0.33, 0.41], dtype=np.float32)
 WORKSPACE_HIGH = np.array([0.55,  0.33, 0.46], dtype=np.float32)
 # Single fixed goal label (mirror of reach_env.GOAL_FIXED)
-GOAL_FIXED = np.array([0.65, -0.15, 0.42], dtype=np.float32)
+# x,y aligned to the real post-it (teach_goal.py); z = real post-it surface.
+# Differs from sim's z (0.42) because the real table is lower — fine since eval
+# ignores z and the IRL reward aligns visually.
+GOAL_FIXED = np.array([0.5119, -0.2945, 0.3354], dtype=np.float32)
 
 # Real xArm6 safe zone (== reach_env.SAFE_LOW/HIGH), meters
 SAFE_LOW  = np.array([0.00, -0.54, 0.18], dtype=np.float32)
-SAFE_HIGH = np.array([0.72,  0.55, 0.60], dtype=np.float32)
+SAFE_HIGH = np.array([0.57,  0.55, 0.60], dtype=np.float32)
 SAFE_ZONE_PENALTY = 1.0
 
-ACTION_SCALE = 0.05          # rad per step per joint (== reach_env default)
+ACTION_SCALE = 0.01          # rad/step per joint. Intentionally LOWER than sim (0.05):
+                             # the real servo tracks stiffly, so 0.01 makes the real
+                             # reach take ~sim-many steps (timestep-aligned) + safer.
 ACTION_DIM   = 6
 OBS_DIM      = 21
 

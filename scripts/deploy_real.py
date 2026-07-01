@@ -38,7 +38,7 @@ JOINT_LIMITS_HIGH = np.array([ 6.283,  2.094,  0.191,  6.283,  3.142,  6.283], d
 # Real xArm6 safe zone (meters, base frame).
 # Hard guard at deploy time — policy actions will be rejected if predicted TCP exits this box.
 SAFE_LOW_M  = np.array([0.000, -0.540, 0.180], dtype=np.float32)
-SAFE_HIGH_M = np.array([0.720,  0.550, 0.600], dtype=np.float32)   # x extended for goal 0.65 (== reach_env.SAFE_HIGH)
+SAFE_HIGH_M = np.array([0.570,  0.550, 0.600], dtype=np.float32)   # == reach_env.SAFE_HIGH
 
 # Training start pose (== base_env.HOME_QPOS). The policy expects to begin here;
 # the xArm factory move_gohome() leaves the EE high/out-of-distribution.
@@ -114,8 +114,8 @@ def main():
                          "only, so keep running past this lets the wrist wander -> fault)")
     ap.add_argument("--patience", type=int, default=30,
                     help="also stop if the best distance hasn't improved for this many steps")
-    ap.add_argument("--action-scale", type=float, default=0.05,
-                    help="rad per step per joint (match training)")
+    ap.add_argument("--action-scale", type=float, default=0.01,
+                    help="rad/step per joint; real default 0.01 (timestep-aligned with sim 0.05)")
     ap.add_argument("--action-filter", type=float, default=0.3,
                     help="EMA smoothing on policy action in [0,1); 0 = off. "
                          "Damps abrupt reversals to avoid overspeed/collision trips.")

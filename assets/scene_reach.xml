@@ -26,6 +26,8 @@
     <camera name="ob_b" mode="targetbody" target="table" pos="1.20 0 0.95" fovy="50"/>
     <camera name="ob_c" mode="targetbody" target="table" pos="1.00 0 1.15" fovy="50"/>
     <camera name="ob_d" mode="targetbody" target="table" pos="0.70 0 1.35" fovy="50"/>
+    <!-- Top-down zoomed view (~-70 deg elevation) matching the real top-down camera. -->
+    <camera name="topzoom" pos="0.741 0 1.259" xyaxes="0 1 0 -0.940 0 0.342" fovy="45"/>
     <light pos="0 0 1.5" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane"/>
 

@@ -133,8 +133,8 @@ def main():
     ap.add_argument("--algo", default="ppo", choices=["ppo", "sac"])
     ap.add_argument("--model", default=None, help="SB3 .zip for --mode policy")
     ap.add_argument("--env-id", default="XArm6Reach-v0")
-    ap.add_argument("--render-camera", default="ob_c",
-                    choices=["front", "ob_b", "ob_c", "ob_d", "topdown"])
+    ap.add_argument("--render-camera", default="topzoom",
+                    choices=["front", "ob_b", "ob_c", "ob_d", "topdown", "topzoom"])
     ap.add_argument("--num-samples", type=int, default=10000,
                     help="total transitions to collect (0 -> use --num-episodes)")
     ap.add_argument("--num-episodes", type=int, default=0,

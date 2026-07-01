@@ -32,19 +32,23 @@ from .base_env import XArm6BaseEnv, HOME_QPOS, JOINT_LIMITS_LOW, JOINT_LIMITS_HI
 # camera (marker fully in frame, not clipped at the edge) AND reachable/successful
 # within the 200-step budget. Verified: 0.315 m from home, IK residual ~0.
 # (To restore multi-goal sampling, change _sample_target back to random.)
+# SIM goal is chosen for an ideal ~70-step expert reach (far corner of the table).
+# It does NOT need to match the real post-it (real_reach_collector uses [0.5119,
+# -0.2945, 0.3354]); cross-domain IL bridges the difference and the camera view is
+# what's aligned, not the goal coordinate.
 GOAL_FIXED = np.array([0.65, -0.15, 0.42], dtype=np.float32)
 WORKSPACE_LOW  = GOAL_FIXED.copy()
 WORKSPACE_HIGH = GOAL_FIXED.copy()
 
 # Real xArm6 safe zone
 SAFE_LOW  = np.array([0.00, -0.54, 0.18], dtype=np.float32)
-SAFE_HIGH = np.array([0.72,  0.55, 0.60], dtype=np.float32)
+SAFE_HIGH = np.array([0.72,  0.55, 0.60], dtype=np.float32)   # x extended for sim goal 0.65
 
 # Selectable front-style camera presets (defined in assets/scene_reach.xml).
 # Approx downward elevation:  front ~28deg, ob_b ~47, ob_c ~62, ob_d ~80 (near top).
 # Choose via  gym.make("XArm6Reach-v0", render_camera="ob_c")  or the per-camera
 # env ids registered in envs/__init__.py (XArm6Reach-obC-v0, ...).
-CAMERA_CHOICES = ("front", "ob_b", "ob_c", "ob_d", "topdown")
+CAMERA_CHOICES = ("front", "ob_b", "ob_c", "ob_d", "topdown", "topzoom")
 
 ACTION_DIM = 6
 SAFE_ZONE_PENALTY = 1.0
@@ -65,7 +69,7 @@ class XArm6ReachEnv(XArm6BaseEnv):
         domain_rand: bool = False,
         past_frames: int = 4,
         img_size: tuple = (64, 64),
-        render_camera: str = "ob_c",
+        render_camera: str = "topzoom",
         action_rate_penalty: float = 0.0,
     ):
         if render_camera not in CAMERA_CHOICES:

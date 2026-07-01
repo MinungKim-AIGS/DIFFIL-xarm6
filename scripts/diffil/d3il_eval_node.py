@@ -47,18 +47,20 @@ def get_policy(args):
     return NumpyActor(random_actor(obs_dim=args.obs_dim, act_dim=args.action_dim))
 
 
-def run_episode(env, actor, success_dist):
+def run_episode(env, actor, success_dist, metric="xy"):
     ob = env.reset()
-    done, reached, min_dist = False, False, np.inf
+    done, reached = False, False
+    min_xy, min_xyz = np.inf, np.inf
     while not done:
         act = actor.get_action(ob, 0.0)              # deterministic for eval
         ob, rew, done, info = env.step(act)
         ee, goal = ob[12:15], ob[15:18]              # reach obs layout
-        d = float(np.linalg.norm(goal - ee))
-        min_dist = min(min_dist, d)
-        if d <= success_dist:
+        d_xy = float(np.linalg.norm(goal[:2] - ee[:2]))   # ignore z (table-height uncertain)
+        d_xyz = float(np.linalg.norm(goal - ee))
+        min_xy, min_xyz = min(min_xy, d_xy), min(min_xyz, d_xyz)
+        if (d_xy if metric == "xy" else d_xyz) <= success_dist:
             reached = True
-    return reached, min_dist
+    return reached, min_xy, min_xyz
 
 
 def main():
@@ -72,9 +74,11 @@ def main():
     ap.add_argument("--episodes", type=int, default=20)
     ap.add_argument("--max-steps", type=int, default=200)
     ap.add_argument("--success-dist", type=float, default=0.05, help="reach success threshold (m)")
+    ap.add_argument("--success-metric", choices=["xy", "xyz"], default="xy",
+                    help="success on the xy plane (ignore z / table height) or full xyz")
     ap.add_argument("--control-hz", type=float, default=50.0)
-    ap.add_argument("--action-scale", type=float, default=0.05,
-                    help="rad/step per joint; lower = slower/safer on real (sim uses 0.05)")
+    ap.add_argument("--action-scale", type=float, default=0.01,
+                    help="rad/step per joint; real default 0.01 (timestep-aligned with sim 0.05)")
     ap.add_argument("--action-filter", type=float, default=0.3)
     ap.add_argument("--home-jitter", type=float, default=0.05)
     ap.add_argument("--obs-dim", type=int, default=21)
@@ -88,24 +92,24 @@ def main():
                        action_scale=args.action_scale,
                        control_hz=args.control_hz, action_filter=args.action_filter,
                        max_steps=args.max_steps, home_jitter=args.home_jitter, seed=args.seed)
-    successes, dists = 0, []
+    successes, xys, xyzs = 0, [], []
     try:
         for ep in range(args.episodes):
-            reached, min_dist = run_episode(env, actor, args.success_dist)
+            reached, min_xy, min_xyz = run_episode(env, actor, args.success_dist, args.success_metric)
             successes += int(reached)
-            dists.append(min_dist)
-            print(f"[eval] ep {ep + 1}/{args.episodes}: {'SUCCESS' if reached else 'fail'} "
-                  f"(min dist {min_dist:.3f} m)")
+            xys.append(min_xy); xyzs.append(min_xyz)
+            print(f"[eval] ep {ep + 1}/{args.episodes}: {'SUCCESS' if reached else 'fail'}  "
+                  f"min xy={min_xy:.3f}m  xyz={min_xyz:.3f}m")
     except KeyboardInterrupt:
         print("\n[eval] interrupted")
     finally:
         env.close()
 
-    n = len(dists)
+    n = len(xys)
     if n:
         print("=" * 48)
-        print(f"reach success rate : {successes}/{n} = {100.0 * successes / n:.1f}%")
-        print(f"mean min-distance  : {np.mean(dists):.3f} m")
+        print(f"reach success rate ({args.success_metric}) : {successes}/{n} = {100.0 * successes / n:.1f}%")
+        print(f"mean min-dist  xy={np.mean(xys):.3f}m  xyz={np.mean(xyzs):.3f}m")
         print("=" * 48)
 
 
