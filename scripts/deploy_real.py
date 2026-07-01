@@ -20,7 +20,7 @@ import argparse
 import time
 
 import numpy as np
-from stable_baselines3 import PPO
+from stable_baselines3 import PPO, SAC
 
 # Lazy import — only required when --dry-run is NOT used
 try:
@@ -39,6 +39,10 @@ JOINT_LIMITS_HIGH = np.array([ 6.283,  2.094,  0.191,  6.283,  3.142,  6.283], d
 # Hard guard at deploy time — policy actions will be rejected if predicted TCP exits this box.
 SAFE_LOW_M  = np.array([0.000, -0.540, 0.180], dtype=np.float32)
 SAFE_HIGH_M = np.array([0.720,  0.550, 0.600], dtype=np.float32)   # x extended for goal 0.65 (== reach_env.SAFE_HIGH)
+
+# Training start pose (== base_env.HOME_QPOS). The policy expects to begin here;
+# the xArm factory move_gohome() leaves the EE high/out-of-distribution.
+HOME_QPOS = np.array([0.0, -0.3, -1.2, 0.0, 1.5, 0.0], dtype=np.float32)
 
 
 def in_safe_zone(ee_pos_m: np.ndarray) -> bool:
@@ -90,6 +94,8 @@ def main():
     ap.add_argument("--task", choices=["reach"], required=True,
                     help="pick_place not yet supported on real (gripper integration TODO)")
     ap.add_argument("--model", required=True)
+    ap.add_argument("--algo", default="ppo", choices=["ppo", "sac"],
+                    help="algorithm the model was trained with (must match the .zip)")
     ap.add_argument("--ip", default="192.168.1.199", help="xArm controller IP (default: 192.168.1.199)")
     ap.add_argument("--port", type=int, default=502,
                     help="Modbus TCP port — informational only; XArmAPI uses 502 internally")
@@ -123,12 +129,16 @@ def main():
             raise SystemExit("xArm-Python-SDK not installed. pip install xArm-Python-SDK")
         arm = XArmAPI(args.ip, is_radian=True)
         arm.motion_enable(enable=True)
+        # Move to the TRAINING home (HOME_QPOS) in position mode, NOT the factory
+        # gohome — the policy was trained starting from this folded pose.
+        arm.set_mode(0); arm.set_state(0); time.sleep(0.2)
+        arm.set_servo_angle(angle=HOME_QPOS.tolist(), speed=0.35, is_radian=True, wait=True)
+        time.sleep(0.3)
         arm.set_mode(1)        # servo motion (real-time joint streaming)
-        arm.set_state(state=0)
-        arm.move_gohome(wait=True)
-        time.sleep(0.5)
+        arm.set_state(0)
+        time.sleep(0.2)
 
-    model = PPO.load(args.model)
+    model = (PPO if args.algo == "ppo" else SAC).load(args.model)
     dt = 1.0 / args.hz
     prev_q = None
     prev_action = np.zeros(6, dtype=np.float32)
