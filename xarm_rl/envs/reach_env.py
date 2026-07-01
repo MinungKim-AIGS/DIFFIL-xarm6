@@ -32,13 +32,13 @@ from .base_env import XArm6BaseEnv, HOME_QPOS, JOINT_LIMITS_LOW, JOINT_LIMITS_HI
 # camera (marker fully in frame, not clipped at the edge) AND reachable/successful
 # within the 200-step budget. Verified: 0.315 m from home, IK residual ~0.
 # (To restore multi-goal sampling, change _sample_target back to random.)
-GOAL_FIXED = np.array([0.48, -0.30, 0.42], dtype=np.float32)
+GOAL_FIXED = np.array([0.65, -0.15, 0.42], dtype=np.float32)
 WORKSPACE_LOW  = GOAL_FIXED.copy()
 WORKSPACE_HIGH = GOAL_FIXED.copy()
 
 # Real xArm6 safe zone
 SAFE_LOW  = np.array([0.00, -0.54, 0.18], dtype=np.float32)
-SAFE_HIGH = np.array([0.57,  0.55, 0.60], dtype=np.float32)
+SAFE_HIGH = np.array([0.72,  0.55, 0.60], dtype=np.float32)
 
 # Selectable front-style camera presets (defined in assets/scene_reach.xml).
 # Approx downward elevation:  front ~28deg, ob_b ~47, ob_c ~62, ob_d ~80 (near top).
@@ -65,7 +65,7 @@ class XArm6ReachEnv(XArm6BaseEnv):
         domain_rand: bool = False,
         past_frames: int = 4,
         img_size: tuple = (64, 64),
-        render_camera: str = "front",
+        render_camera: str = "ob_c",
         action_rate_penalty: float = 0.0,
     ):
         if render_camera not in CAMERA_CHOICES:

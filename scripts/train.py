@@ -13,7 +13,7 @@ from pathlib import Path
 import gymnasium as gym
 from stable_baselines3 import PPO, SAC
 from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv, VecMonitor
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import EvalCallback
 
 import xarm_rl  # noqa: F401  registers envs
 
@@ -82,6 +82,9 @@ def main():
     ap.add_argument("--out", type=str, default=None)
     ap.add_argument("--domain_rand", action="store_true",
                     help="enable domain randomization (Reach only)")
+    ap.add_argument("--eval-freq", type=int, default=25_000,
+                    help="eval (and best-model save) every N total timesteps")
+    ap.add_argument("--n-eval-episodes", type=int, default=10)
     args = ap.parse_args()
 
     env_id = TASK_TO_ENV[args.task]
@@ -101,18 +104,25 @@ def main():
 
     model = build_ppo(vec_env, out, args.seed) if args.algo == "ppo" else build_sac(vec_env, out, args.seed)
 
-    ckpt_cb = CheckpointCallback(
-        save_freq=max(50_000 // n_envs, 5_000),
-        save_path=str(out / "ckpts"),
-        name_prefix=args.algo,
+    # Evaluate on the NOMINAL task (no domain randomization) and keep only the
+    # BEST policy by eval reward -> guards against overfitting / late collapse.
+    eval_env = DummyVecEnv([make_env(env_id, args.seed + 1000, domain_rand=False)])
+    eval_env = VecMonitor(eval_env)
+    eval_cb = EvalCallback(
+        eval_env,
+        best_model_save_path=str(out),                 # writes <out>/best_model.zip
+        log_path=str(out / "eval"),
+        eval_freq=max(args.eval_freq // n_envs, 1),
+        n_eval_episodes=args.n_eval_episodes,
+        deterministic=True, render=False,
     )
 
     print(f"[train] task={args.task} algo={args.algo} n_envs={n_envs} "
           f"timesteps={timesteps:,} domain_rand={args.domain_rand}")
-    model.learn(total_timesteps=timesteps, callback=ckpt_cb, progress_bar=False)
-    final_path = out / "final_model"
+    model.learn(total_timesteps=timesteps, callback=eval_cb, progress_bar=False)
+    final_path = out / "final_model"                   # the LAST policy
     model.save(final_path)
-    print(f"[train] saved {final_path}.zip")
+    print(f"[train] saved BEST -> {out / 'best_model'}.zip   LAST -> {final_path}.zip")
 
 
 if __name__ == "__main__":

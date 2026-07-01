@@ -60,6 +60,8 @@ def main():
     ap.add_argument("--num-episodes", type=int, default=0, help="0 = run forever")
     ap.add_argument("--max-steps", type=int, default=200)
     ap.add_argument("--control-hz", type=float, default=50.0)
+    ap.add_argument("--action-scale", type=float, default=0.05,
+                    help="rad/step per joint; lower = slower/safer on real (sim uses 0.05)")
     ap.add_argument("--action-filter", type=float, default=0.3)
     ap.add_argument("--explore-noise", type=float, default=0.1)
     ap.add_argument("--home-jitter", type=float, default=0.05)
@@ -73,6 +75,7 @@ def main():
         print("[actor] WARNING: no --init-weights; starting from random actor (waiting for learner)")
 
     env = RealRobotEnv(ip=args.ip, front_serial=args.front_serial, dry_run=args.dry_run,
+                       action_scale=args.action_scale,
                        control_hz=args.control_hz, action_filter=args.action_filter,
                        max_steps=args.max_steps, home_jitter=args.home_jitter, seed=args.seed)
     sender = TrajectorySender(args.server_host, args.traj_port)

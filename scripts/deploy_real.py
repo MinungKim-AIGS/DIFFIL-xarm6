@@ -38,7 +38,7 @@ JOINT_LIMITS_HIGH = np.array([ 6.283,  2.094,  0.191,  6.283,  3.142,  6.283], d
 # Real xArm6 safe zone (meters, base frame).
 # Hard guard at deploy time — policy actions will be rejected if predicted TCP exits this box.
 SAFE_LOW_M  = np.array([0.000, -0.540, 0.180], dtype=np.float32)
-SAFE_HIGH_M = np.array([0.570,  0.550, 0.600], dtype=np.float32)
+SAFE_HIGH_M = np.array([0.720,  0.550, 0.600], dtype=np.float32)   # x extended for goal 0.65 (== reach_env.SAFE_HIGH)
 
 
 def in_safe_zone(ee_pos_m: np.ndarray) -> bool:
@@ -93,7 +93,7 @@ def main():
     ap.add_argument("--ip", default="192.168.1.199", help="xArm controller IP (default: 192.168.1.199)")
     ap.add_argument("--port", type=int, default=502,
                     help="Modbus TCP port — informational only; XArmAPI uses 502 internally")
-    ap.add_argument("--target", nargs=3, type=float, default=[0.48, -0.30, 0.42],
+    ap.add_argument("--target", nargs=3, type=float, default=[0.65, -0.15, 0.42],
                     help="target xyz in meters (world frame); default = reach_env.GOAL_FIXED")
     ap.add_argument("--speed", type=int, default=30, help="0-100, xArm servo speed")
     ap.add_argument("--hz", type=float, default=20.0, help="control loop frequency")
@@ -104,6 +104,12 @@ def main():
                     help="EMA smoothing on policy action in [0,1); 0 = off. "
                          "Damps abrupt reversals to avoid overspeed/collision trips.")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--save", default=None,
+                    help="record the rollout to this .npz (d3il format; inspect with "
+                         "inspect_dataset.py / dataset_to_gif.py)")
+    ap.add_argument("--front-serial", default=None,
+                    help="RealSense serial to also capture 64x64 frames (enables the GIF); "
+                         "state-only if omitted")
     args = ap.parse_args()
 
     target = np.array(args.target, dtype=np.float32)
@@ -126,6 +132,14 @@ def main():
     dt = 1.0 / args.hz
     prev_q = None
     prev_action = np.zeros(6, dtype=np.float32)
+
+    # optional rollout recording (d3il format) -> inspect_dataset.py / dataset_to_gif.py
+    rec = args.save is not None
+    OBS, ACT, REW, DON, RAWF = [], [], [], [], []
+    cam = None
+    if rec and args.front_serial and not args.dry_run:
+        import real_reach_collector as rrc
+        cam = rrc.RealSenseCamera(args.front_serial)
 
     for step in range(args.max_steps):
         t0 = time.time()
@@ -155,6 +169,12 @@ def main():
         action = args.action_filter * prev_action + (1.0 - args.action_filter) * action
         prev_action = action.copy()
 
+        if rec:                                # record the EXECUTED (post-EMA) action
+            OBS.append(obs); ACT.append(action.copy())
+            REW.append(-float(np.linalg.norm(target - ee))); DON.append(False)
+            if cam is not None:
+                RAWF.append(cam.get_frame())
+
         target_q = q + action * args.action_scale
 
         # Safe-zone guard: if current TCP outside box, abort immediately.
@@ -179,6 +199,22 @@ def main():
         elapsed = time.time() - t0
         if elapsed < dt:
             time.sleep(dt - elapsed)
+
+    if rec and len(ACT) > 0:
+        obs_arr = np.asarray(OBS, np.float32)
+        nobs = np.roll(obs_arr, -1, axis=0); nobs[-1] = obs_arr[-1]
+        DON[-1] = True                          # last recorded step is terminal
+        data = {"obs": obs_arr, "nobs": nobs, "act": np.asarray(ACT, np.float32),
+                "rew": np.asarray(REW, np.float32), "don": np.asarray(DON, bool),
+                "ids": np.zeros(len(ACT), np.int32),
+                "step": np.arange(1, len(ACT) + 1, dtype=np.int32), "n": len(ACT)}
+        if cam is not None:
+            import real_reach_collector as rrc
+            data["ims"] = rrc.stack_frames(RAWF, rrc.PAST_FRAMES).astype(np.uint8)
+            cam.stop()
+        np.savez_compressed(args.save, **data)
+        print(f"[deploy] saved rollout -> {args.save}  (n={len(ACT)}, "
+              + (f"ims {data['ims'].shape})" if 'ims' in data else "state-only)"))
 
     if not args.dry_run:
         arm.disconnect()
