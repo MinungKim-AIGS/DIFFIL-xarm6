@@ -152,8 +152,8 @@ def main():
     dt = 1.0 / args.hz
     prev_q = None
     prev_action = np.zeros(6, dtype=np.float32)
-    best_dist, stall = np.inf, 0            # reach detection
-    holding, hold_q = False, None           # reach -> hold the pose to the time limit
+    best_dist, stall, best_q = np.inf, 0, None   # reach detection (best_q = closest pose seen)
+    holding, hold_q = False, None                # reach -> hold that closest pose to the limit
 
     # optional rollout recording (d3il format) -> inspect_dataset.py / dataset_to_gif.py
     rec = args.save is not None
@@ -218,12 +218,12 @@ def main():
         # episode length then matches training, and the position-only policy stops
         # wandering the wrist after arrival.
         if dist < best_dist - 1e-3:
-            best_dist, stall = dist, 0
+            best_dist, stall, best_q = dist, 0, q.copy()
         else:
             stall += 1
         if not holding and not args.dry_run and (dist < args.stop_dist or stall >= args.patience):
             holding = True
-            hold_q = q.copy()
+            hold_q = best_q if best_q is not None else q.copy()   # hold the CLOSEST pose, not the drifted one
             why = "reached" if dist < args.stop_dist else f"converged (no gain {args.patience} steps)"
             print(f"[deploy] {why}: d={dist:.3f}m (best {best_dist:.3f}m) at step {step} -> HOLDING to terminal")
 
