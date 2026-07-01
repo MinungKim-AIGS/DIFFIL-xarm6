@@ -109,6 +109,11 @@ def main():
     ap.add_argument("--speed", type=int, default=30, help="0-100, xArm servo speed")
     ap.add_argument("--hz", type=float, default=20.0, help="control loop frequency")
     ap.add_argument("--max-steps", type=int, default=200)
+    ap.add_argument("--stop-dist", type=float, default=0.05,
+                    help="stop once EE is within this many m of target (reach is position-"
+                         "only, so keep running past this lets the wrist wander -> fault)")
+    ap.add_argument("--patience", type=int, default=30,
+                    help="also stop if the best distance hasn't improved for this many steps")
     ap.add_argument("--action-scale", type=float, default=0.05,
                     help="rad per step per joint (match training)")
     ap.add_argument("--action-filter", type=float, default=0.3,
@@ -147,6 +152,8 @@ def main():
     dt = 1.0 / args.hz
     prev_q = None
     prev_action = np.zeros(6, dtype=np.float32)
+    best_dist, stall = np.inf, 0            # reach detection
+    holding, hold_q = False, None           # reach -> hold the pose to the time limit
 
     # optional rollout recording (d3il format) -> inspect_dataset.py / dataset_to_gif.py
     rec = args.save is not None
@@ -175,22 +182,24 @@ def main():
         qd = np.zeros(6, dtype=np.float32) if prev_q is None else (q - prev_q) / dt
         prev_q = q
 
+        dist = float(np.linalg.norm(target - ee))
         obs = build_reach_obs(q, qd, ee, target)
-        action, _ = model.predict(obs, deterministic=True)
-        action = np.clip(action, -1.0, 1.0)[:6]
+        if holding:
+            action = np.zeros(6, dtype=np.float32)          # freeze at the reached pose
+            target_q = np.clip(hold_q, JOINT_LIMITS_LOW, JOINT_LIMITS_HIGH)
+        else:
+            action, _ = model.predict(obs, deterministic=True)
+            action = np.clip(action, -1.0, 1.0)[:6]
+            # Action low-pass (EMA): damp abrupt reversals -> smoother joint motion.
+            action = args.action_filter * prev_action + (1.0 - args.action_filter) * action
+            prev_action = action.copy()
+            target_q = np.clip(q + action * args.action_scale, JOINT_LIMITS_LOW, JOINT_LIMITS_HIGH)
 
-        # Action low-pass (EMA): damp abrupt reversals -> smoother joint motion,
-        # less likely to trip the controller's overspeed/collision protection.
-        action = args.action_filter * prev_action + (1.0 - args.action_filter) * action
-        prev_action = action.copy()
-
-        if rec:                                # record the EXECUTED (post-EMA) action
+        if rec:                                # executed action (0 while holding)
             OBS.append(obs); ACT.append(action.copy())
-            REW.append(-float(np.linalg.norm(target - ee))); DON.append(False)
+            REW.append(-dist); DON.append(False)
             if cam is not None:
                 RAWF.append(cam.get_frame())
-
-        target_q = np.clip(q + action * args.action_scale, JOINT_LIMITS_LOW, JOINT_LIMITS_HIGH)
 
         # Safe-zone guard: if current TCP outside box, abort immediately.
         if not in_safe_zone(ee):
@@ -205,10 +214,18 @@ def main():
             arm.set_servo_angle_j(target_q.tolist(), is_radian=True,
                                   speed=np.deg2rad(args.speed * 3))
 
-        dist = float(np.linalg.norm(target - ee))
-        if dist < 0.03 and not args.dry_run:
-            print(f"[deploy] reached target (d={dist:.3f}m) in {step} steps")
-            break
+        # Once reached/converged, HOLD the pose to the time limit (instead of ending):
+        # episode length then matches training, and the position-only policy stops
+        # wandering the wrist after arrival.
+        if dist < best_dist - 1e-3:
+            best_dist, stall = dist, 0
+        else:
+            stall += 1
+        if not holding and not args.dry_run and (dist < args.stop_dist or stall >= args.patience):
+            holding = True
+            hold_q = q.copy()
+            why = "reached" if dist < args.stop_dist else f"converged (no gain {args.patience} steps)"
+            print(f"[deploy] {why}: d={dist:.3f}m (best {best_dist:.3f}m) at step {step} -> HOLDING to terminal")
 
         # Pace the loop
         elapsed = time.time() - t0
