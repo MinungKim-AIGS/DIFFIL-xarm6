@@ -44,6 +44,11 @@ SAFE_HIGH_M = np.array([0.720,  0.550, 0.600], dtype=np.float32)   # x extended 
 # the xArm factory move_gohome() leaves the EE high/out-of-distribution.
 HOME_QPOS = np.array([0.0, -0.3, -1.2, 0.0, 1.5, 0.0], dtype=np.float32)
 
+# Joint limits (== base_env / real_reach_collector). target_q MUST be clipped to
+# these before commanding the servo, else the SDK rejects it (out_of_joint_range).
+JOINT_LIMITS_LOW  = np.array([-6.283, -2.059, -3.927, -6.283, -1.693, -6.283], dtype=np.float32)
+JOINT_LIMITS_HIGH = np.array([ 6.283,  2.094,  0.191,  6.283,  3.142,  6.283], dtype=np.float32)
+
 
 def in_safe_zone(ee_pos_m: np.ndarray) -> bool:
     return bool(np.all(ee_pos_m >= SAFE_LOW_M) and np.all(ee_pos_m <= SAFE_HIGH_M))
@@ -185,7 +190,7 @@ def main():
             if cam is not None:
                 RAWF.append(cam.get_frame())
 
-        target_q = q + action * args.action_scale
+        target_q = np.clip(q + action * args.action_scale, JOINT_LIMITS_LOW, JOINT_LIMITS_HIGH)
 
         # Safe-zone guard: if current TCP outside box, abort immediately.
         if not in_safe_zone(ee):
