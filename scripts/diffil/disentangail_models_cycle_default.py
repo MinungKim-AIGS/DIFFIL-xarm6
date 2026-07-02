@@ -356,17 +356,18 @@ class DisentanGAIL(tf.keras.Model):
                          + self.label_loss_se *tf.reduce_mean(frame_label_loss[:self._batch_size])\
                          + self.label_loss_sr *tf.reduce_mean(frame_label_loss[self._batch_size:2 * self._batch_size])
 
-            g_loss = recon_scale *total_recon_loss + cycle_scale * cyclic_loss + generator_scale * gen_loss #+ label_loss
+            g_loss = recon_scale *total_recon_loss + cycle_scale * cyclic_loss + generator_scale * gen_loss + label_loss
 
         g_gradients_next = g_tape.gradient(g_loss,
                                            self._pre_s.trainable_variables
-                                           + self._recon_layer_s.trainable_variables + self._recon_layer_t.trainable_variables)
+                                           + self._recon_layer_s.trainable_variables + self._recon_layer_t.trainable_variables
+                                           + self._label_net.trainable_variables + self._label_net_frame.trainable_variables)
 
         del g_tape
 
         self.next_state_optimizer.apply_gradients(
             zip(g_gradients_next, self._pre_s.trainable_variables
-                + self._recon_layer_s.trainable_variables + self._recon_layer_t.trainable_variables))
+                + self._recon_layer_s.trainable_variables + self._recon_layer_t.trainable_variables+ self._label_net.trainable_variables+ self._label_net_frame.trainable_variables))
 
 
         return 65536*recon_loss,feature_recon_loss,feature_fake_loss, recon_label_loss, \
@@ -3033,8 +3034,8 @@ class DisentanGAIL(tf.keras.Model):
         print("Preprocessing Done!")
         print("=*"*20)
 
-        # print("Start SAC training")
-        # self.agent.train(agent_buffer, l_batch_size, l_updates, l_act_delay, self.cnt)
+        print("Start SAC training")
+        self.agent.train(agent_buffer, l_batch_size, l_updates, l_act_delay, self.cnt)
 
         end_time = time.time()
         elapsed_time_load_buf = end_time - start_time

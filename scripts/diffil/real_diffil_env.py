@@ -45,7 +45,7 @@ class RealRobotEnv:
                  action_scale: float = rrc.ACTION_SCALE, control_hz: float = rrc.CONTROL_HZ,
                  action_filter: float = 0.3, max_steps: int = 200, home_jitter: float = 0.05,
                  past_frames: int = rrc.PAST_FRAMES, img_size=rrc.IMG_SIZE, seed: int = 0,
-                 safe_margin: float = 0.03):
+                 safe_margin: float = 0.03, max_faults: int = 10):
         self.arm = rrc.open_arm(ip, dry_run=dry_run)
         self.camera = rrc.DummyCamera() if (dry_run or not front_serial) \
             else rrc.RealSenseCamera(front_serial)
@@ -55,6 +55,7 @@ class RealRobotEnv:
         self.max_steps = int(max_steps)
         self.home_jitter = float(home_jitter)
         self.safe_margin = float(safe_margin)   # steer home this far INSIDE the safe box
+        self.max_faults = int(max_faults)       # per-episode fault recoveries before giving up
         self.past_frames = past_frames
         self.img_size = img_size
         self.target = rrc.GOAL_FIXED.copy()
@@ -65,6 +66,7 @@ class RealRobotEnv:
         self._prev_action = np.zeros(rrc.ACTION_DIM, dtype=np.float32)
         self._frames = None
         self._ct = 0
+        self._fault_count = 0   # fault recoveries used in the current episode
         self._stopped = False   # safety/fault latch for the current episode
 
     # ---- gym-ish API ----
@@ -72,22 +74,68 @@ class RealRobotEnv:
         self.rng = np.random.default_rng(s)
         self.action_space.seed(s)
 
-    def reset(self):
-        noise = self.rng.uniform(-self.home_jitter, self.home_jitter, size=6).astype(np.float32)
+    # ---- robustness helpers ----
+    def _ensure_ready(self, mode: int, retries: int = 4, settle: float = 0.4) -> bool:
+        """Robustly bring the arm to a movable/ready state: clear residual faults,
+        motion_enable, set mode+state, then VERIFY (err==0 and state not 'stop')
+        before returning. Retries the sequence. Prevents the 'xArm is not ready to
+        move' (code=1) race that happens when a command is issued before enable
+        settles (typical right after a collision left the arm latched in error)."""
+        ecode, state = 0, 2
+        for _ in range(retries):
+            try:
+                self.arm.clean_error(); self.arm.clean_warn()
+                self.arm.motion_enable(enable=True)
+                self.arm.set_mode(mode); self.arm.set_state(0)
+            except Exception:
+                pass
+            time.sleep(settle)
+            try:
+                ecode, _w = rrc.arm_fault(self.arm)
+            except Exception:
+                ecode = 0
+            try:
+                _code, state = self.arm.get_state()
+            except Exception:
+                state = 2                      # dummy / dry-run -> treat as ready
+            if ecode == 0 and (state is None or state < 4):
+                return True
+        print(f"  [ready] WARNING: arm not confirmed ready (err={ecode}, state={state})")
+        return False
+
+    def _recover(self):
+        """Clear a collision/overspeed/servo fault and re-home WITHOUT ending the
+        episode, so the episode keeps its FIXED length. Mirrors reset()'s home move:
+        position mode -> blocking home -> back to servo-streaming mode."""
         try:
-            self.arm.clean_error(); self.arm.clean_warn(); self.arm.motion_enable(enable=True)
+            self.arm.clean_error(); self.arm.clean_warn()
         except Exception:
             pass
-        self.arm.set_mode(0); self.arm.set_state(0); time.sleep(0.2)
+        self._ensure_ready(mode=0)
+        try:
+            self.arm.set_servo_angle(angle=rrc.HOME_QPOS.tolist(), speed=0.35,
+                                     is_radian=True, wait=True)
+        except Exception:
+            pass
+        time.sleep(0.2)
+        self._ensure_ready(mode=1)             # back to servo mode for the episode
+        self._prev_action[:] = 0.0
+
+    def reset(self):
+        noise = self.rng.uniform(-self.home_jitter, self.home_jitter, size=6).astype(np.float32)
         home = (rrc.HOME_QPOS + noise).astype(np.float32)
+        # robustly reach a ready state FIRST (clears any residual fault from a prior
+        # collision) so the home command doesn't hit "xArm is not ready to move".
+        self._ensure_ready(mode=0)
         self.arm.set_servo_angle(angle=home.tolist(), speed=0.35, is_radian=True, wait=True)
         time.sleep(0.3)
-        self.arm.set_mode(1); self.arm.set_state(0); time.sleep(0.2)
+        self._ensure_ready(mode=1)             # servo-streaming mode for the episode
 
         self._prev_q = None
         self._prev_action[:] = 0.0
         self._frames = None
         self._ct = 0
+        self._fault_count = 0
         self._stopped = False
         return self._obs()
 
@@ -121,15 +169,29 @@ class RealRobotEnv:
 
         target_q = np.clip(q + act * self.action_scale, rrc.JOINT_LIMITS_LOW, rrc.JOINT_LIMITS_HIGH)
         ret = self.arm.set_servo_angle_j(angles=target_q.tolist(), is_radian=True)
+        fault = False
         if ret != 0:
-            print(f"  warn: set_servo_angle_j ret={ret} - ending episode")
-            self._stopped = True; done = True
+            print(f"  warn: set_servo_angle_j ret={ret}")
+            fault = True
         else:
             err, _ = rrc.arm_fault(self.arm)
             if err != 0:
-                print(f"  [FAULT] error_code={err} - clearing + ending episode")
-                self.arm.clean_error(); self.arm.clean_warn()
+                print(f"  [FAULT] error_code={err}")
+                fault = True
+
+        # NON-TERMINATING fault recovery: on a collision/overspeed/servo error, clear
+        # + re-home + keep going (episode stays FIXED length). Only give up after
+        # max_faults recoveries in one episode (avoids hammering the hardware in a
+        # tight fault loop). done stays False here -> _ct keeps counting to max_steps.
+        if fault:
+            self._fault_count += 1
+            if self._fault_count > self.max_faults:
+                print(f"  [FAULT] exceeded {self.max_faults} recoveries - ending episode")
                 self._stopped = True; done = True
+            else:
+                print(f"  [FAULT] recovering #{self._fault_count}/{self.max_faults} "
+                      f"(re-home, episode continues)")
+                self._recover()
 
         # pace control loop
         dt = time.time() - t0

@@ -81,8 +81,11 @@ class RealLearner:
 
     def __init__(self, args):
         self.args = args
-        self.rx = TrajectoryReceiver(args.traj_port)
-        self.pub = WeightPublisher(args.weight_port)
+        self.offline = bool(getattr(args, "offline", False))
+        # OFFLINE: train encoder/decoder on the fixed, already-collected buffers only
+        # -> no actor sockets (no B^TL streaming in, no weight publishing out).
+        self.rx = None if self.offline else TrajectoryReceiver(args.traj_port)
+        self.pub = None if self.offline else WeightPublisher(args.weight_port)
         self.gail = None
         self.agent_buffer = None
         self.l_agent = None
@@ -113,7 +116,8 @@ class RealLearner:
             prior_file_location=a.prior_file_location, env_name=a.env_name,
             source_random_location=a.source_random, target_random_location=a.target_random,
             target_learner_seed=a.target_seed, action_dim=a.action_dim,
-            use_source_env=a.use_source_env, run_wandb=run_wandb)
+            use_source_env=a.use_source_env, run_wandb=run_wandb,
+            log_dir=a.log_dir, gen_loss=a.gen_loss)
         self.gail, self.agent_buffer, self.l_agent, self.sampler = build_diffil(cfg)
         try:
             self.obs_dim = int(self.agent_buffer.obs.shape[1])
@@ -152,8 +156,33 @@ class RealLearner:
         w = self._weight_io.export_actor(act, version=self.version)
         self.pub.publish(w)
 
+    def _train_round(self):
+        """One DIFF-IL training round on the current buffers (identical call to the
+        offline reference). With Label/SAC commented out in DisentanGAIL.train this
+        updates only the encoder/decoders; otherwise it is the full round."""
+        a = self.args
+        self.gail.train(agent_buffer=self.agent_buffer,
+                        l_batch_size=a.l_batch_size, l_updates=a.rl_updates, l_act_delay=1,
+                        d_updates=a.model_updates, mi_updates=10,
+                        d_e_batch_size=a.d_batch, d_l_batch_size=a.d_batch,
+                        sampling_alpha=a.sampling_alpha)
+
+    def run_offline(self):
+        """No comm: train on the fixed, already-collected buffers (B^SE/B^SR/B^TR +
+        seeded B^TL). Add --wandb to log the encoder/decoder reconstructions."""
+        a = self.args
+        print(f"[learner/offline] no actor comm; training on fixed buffers for "
+              f"{a.offline_rounds} rounds (encoder/decoder focus)")
+        for r in range(a.offline_rounds):
+            self._train_round()
+            print(f"[learner/offline] round {r + 1}/{a.offline_rounds} done")
+        print("[learner/offline] finished")
+
     def run(self):
         self.build()
+        if self.offline:                          # pure model training, no sockets
+            self.run_offline()
+            return
         time.sleep(0.3)
         self.publish_actor()                     # send v0 so the actor can start
         a = self.args
@@ -161,18 +190,14 @@ class RealLearner:
             added = self.feed_target(max_new=a.max_new_steps)
             if added < a.min_new_steps:           # wait for enough fresh target data
                 time.sleep(0.1); continue
-            # one DIFF-IL training round (model + RL), identical call to the reference
-            self.gail.train(agent_buffer=self.agent_buffer,
-                            l_batch_size=a.l_batch_size, l_updates=a.rl_updates, l_act_delay=1,
-                            d_updates=a.model_updates, mi_updates=10,
-                            d_e_batch_size=a.d_batch, d_l_batch_size=a.d_batch,
-                            sampling_alpha=a.sampling_alpha)
+            self._train_round()
             self.version += 1
             self.publish_actor()
             print(f"[learner] published actor v{self.version} (+{added} new target steps)")
 
     def close(self):
-        self.rx.close(); self.pub.close()
+        if self.rx is not None: self.rx.close()
+        if self.pub is not None: self.pub.close()
 
 
 def main():
@@ -181,6 +206,12 @@ def main():
     ap.add_argument("--weight-port", type=int, default=5558)
     ap.add_argument("--mock", action="store_true", help="no-TF echo learner for e2e tests")
     ap.add_argument("--publish-every", type=int, default=1, help="[mock] rounds between publishes")
+    # OFFLINE mode: pure model training on already-collected data, no actor comm
+    ap.add_argument("--offline", action="store_true",
+                    help="no actor comm: train encoder/decoder on the already-collected "
+                         "fixed buffers only (B^SE/B^SR/B^TR + seeded B^TL)")
+    ap.add_argument("--offline-rounds", type=int, default=100,
+                    help="[offline] number of train rounds over the fixed buffers")
     # real-mode DIFF-IL knobs (passed through to gail.train / build)
     ap.add_argument("--min-new-steps", type=int, default=200)
     ap.add_argument("--max-new-steps", type=int, default=1000,
@@ -191,6 +222,12 @@ def main():
     ap.add_argument("--model-updates", type=int, default=500)
     ap.add_argument("--d-batch", type=int, default=64)
     ap.add_argument("--sampling-alpha", type=float, default=0.0)
+    ap.add_argument("--gen-loss", type=float, default=0.1,
+                    help="generator (adversarial) loss scale; lower = weaker domain-align "
+                         "pressure. sweep e.g. 0.1 -> 0.05 -> 0.02 -> 0.01")
+    ap.add_argument("--log-dir", default="experiments_data/xarm6_reach",
+                    help="output dir for samples/plots/tsne. USE A UNIQUE NAME PER RUN to "
+                         "avoid FileExistsError (the sample makedirs are not exist_ok).")
     # wandb logging (DisentanGAIL analysis: reconstructions, fake samples, losses)
     ap.add_argument("--wandb", action="store_true", help="log DIFF-IL analysis + losses to wandb")
     ap.add_argument("--wandb-project", default="diffil-xarm6")
