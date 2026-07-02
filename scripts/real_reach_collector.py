@@ -247,7 +247,7 @@ class RealReachCollector:
     def __init__(self, arm, camera, action_scale: float = ACTION_SCALE,
                  control_hz: float = CONTROL_HZ, past_frames: int = PAST_FRAMES,
                  seed: int | None = None, waypoints=None, recovery_margin: float = 0.03,
-                 hold_steps=(15, 50), min_steps: int = 50,
+                 hold_steps=(15, 50), min_steps: int = 50, max_faults: int = 10,
                  max_action: float = 1.0, smooth: float = 0.0,
                  ou_sigma: float = 0.3, ou_mix: float = 0.2):
         self.arm = arm
@@ -257,6 +257,7 @@ class RealReachCollector:
         self.past_frames = past_frames
         self.rng = np.random.default_rng(seed)
         self.min_steps = int(min_steps)
+        self.max_faults = int(max_faults)       # per-episode fault recoveries before giving up
         # max_action / smooth control how gently the arm moves (see explore.py).
         self.babbler = WaypointBabbler(action_scale, JOINT_LIMITS_LOW, JOINT_LIMITS_HIGH,
                                        HOME_QPOS, waypoints=waypoints, hold_steps=hold_steps,
@@ -278,25 +279,61 @@ class RealReachCollector:
             raise RuntimeError(f"get_position failed: code={code}")
         return np.asarray(tcp[:3], dtype=np.float32) / 1000.0  # mm -> m
 
+    # --- robustness helpers (mirror scripts/diffil/real_diffil_env.py) ---
+    def _home_ward(self, q: np.ndarray) -> np.ndarray:
+        """Joint-space action that moves toward HOME_QPOS (clipped to [-1,1])."""
+        return np.clip((HOME_QPOS - q) / self.action_scale, -1.0, 1.0).astype(np.float32)
+
+    def _ensure_ready(self, mode: int, retries: int = 4, settle: float = 0.4) -> bool:
+        """Robustly bring the arm to a movable/ready state (clear faults, enable,
+        set mode+state) and VERIFY (err==0 and state not 'stop') before returning.
+        Prevents the 'xArm is not ready to move' race after a collision."""
+        ecode, state = 0, 2
+        for _ in range(retries):
+            try:
+                self.arm.clean_error(); self.arm.clean_warn()
+                self.arm.motion_enable(enable=True)
+                self.arm.set_mode(mode); self.arm.set_state(0)
+            except Exception:
+                pass
+            time.sleep(settle)
+            try:
+                ecode, _w = arm_fault(self.arm)
+            except Exception:
+                ecode = 0
+            try:
+                _code, state = self.arm.get_state()
+            except Exception:
+                state = 2                      # MockArm / dry-run -> treat as ready
+            if ecode == 0 and (state is None or state < 4):
+                return True
+        print(f"  [ready] WARNING: arm not confirmed ready (err={ecode}, state={state})")
+        return False
+
+    def _recover(self) -> None:
+        """Clear a collision/overspeed/servo fault by re-enabling the servo IN PLACE
+        (NO teleport). The caller then latches home-steering so the arm returns to
+        HOME_QPOS SMOOTHLY over the control loop -> continuous frames, fixed length."""
+        try:
+            self.arm.clean_error(); self.arm.clean_warn()
+        except Exception:
+            pass
+        self._ensure_ready(mode=1)             # re-enable servo mode in place (no motion)
+
     def reset_to_home(self, home_jitter: float = 0.0) -> None:
         """Position-mode move to home (+ optional jitter), then back to servo mode."""
         noise = self.rng.uniform(-home_jitter, home_jitter, size=6).astype(np.float32) \
             if home_jitter > 0 else np.zeros(6, dtype=np.float32)
         home = (HOME_QPOS + noise).astype(np.float32)
-        self.arm.clean_error()
-        self.arm.clean_warn()
-        self.arm.motion_enable(enable=True)
-        self.arm.set_mode(0)
-        self.arm.set_state(0)
-        time.sleep(0.2)
+        # robustly reach a ready state FIRST (clears residual faults from a prior
+        # collision) so the home command doesn't hit "xArm is not ready to move".
+        self._ensure_ready(mode=0)
         ret = self.arm.set_servo_angle(angle=home.tolist(), speed=0.35,
                                        is_radian=True, wait=True)
         if ret != 0:
-            raise RuntimeError(f"home move failed: ret={ret}")
+            print(f"  warn: home move ret={ret} (continuing)")
         time.sleep(0.3)
-        self.arm.set_mode(1)
-        self.arm.set_state(0)
-        time.sleep(0.2)
+        self._ensure_ready(mode=1)             # servo-streaming mode for the episode
 
     def sample_target(self) -> np.ndarray:
         # Single fixed goal label (mirror of reach_env.GOAL_FIXED).
@@ -316,6 +353,8 @@ class RealReachCollector:
 
         ep_obs, ep_act, ep_rew, ep_don, ep_ims = [], [], [], [], []
         prev_q = None
+        homing = False          # post-fault: latched smooth home-steer (no teleport)
+        fault_count = 0
 
         for step in range(max_steps):
             t0 = time.time()
@@ -327,20 +366,36 @@ class RealReachCollector:
             obs = build_reach_obs(q, qd, ee, target)
             frame = self.camera.get_frame()
 
-            # goal-babbling action + NON-TERMINATING safe-zone recovery
-            base_a = self.babbler.act(q)
-            action, _recovered = self.recovery.wrap(q, ee, base_a)
+            # action: post-fault home-steer latch > safe-zone recovery > goal-babbling
+            if homing:
+                # steer home SMOOTHLY until back near HOME_QPOS, then resume babbling
+                # (no teleport -> the recorded frames change gradually).
+                action = self._home_ward(q)
+                if float(np.linalg.norm(q - HOME_QPOS)) < 0.10:
+                    homing = False
+            else:
+                base_a = self.babbler.act(q)
+                action, _recovered = self.recovery.wrap(q, ee, base_a)   # safe-zone (non-terminating)
             target_q = np.clip(q + action * self.action_scale,
                                JOINT_LIMITS_LOW, JOINT_LIMITS_HIGH)
             ret = self.arm.set_servo_angle_j(angles=target_q.tolist(), is_radian=True)
-            if ret != 0:
-                print(f"  warn: set_servo_angle_j ret={ret} at step {step}")
-                break
-            err, warn = arm_fault(self.arm)
-            if err != 0:
-                print(f"  [FAULT] controller error_code={err} at step {step} - clearing + ending episode")
-                self.arm.clean_error(); self.arm.clean_warn()
-                break
+
+            fault = (ret != 0)
+            if not fault:
+                err, warn = arm_fault(self.arm)
+                fault = (err != 0)
+            # NON-TERMINATING fault recovery: on collision/overspeed/servo error, re-enable
+            # in place + latch smooth home-steer, and KEEP collecting so the episode length
+            # stays FIXED. Give up only after max_faults recoveries in one episode.
+            if fault:
+                fault_count += 1
+                if fault_count > self.max_faults:
+                    print(f"  [FAULT] exceeded {self.max_faults} recoveries at step {step} - ending episode")
+                    break
+                print(f"  [FAULT] recovering #{fault_count}/{self.max_faults} at step {step} "
+                      f"(re-enable + smooth home-steer, episode continues)")
+                self._recover()
+                homing = True
 
             ep_obs.append(obs)
             ep_act.append(action)
