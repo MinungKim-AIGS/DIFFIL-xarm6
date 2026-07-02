@@ -67,6 +67,7 @@ class RealRobotEnv:
         self._frames = None
         self._ct = 0
         self._fault_count = 0   # fault recoveries used in the current episode
+        self._homing = False    # latched home-steer after a fault (smooth, no teleport)
         self._stopped = False   # safety/fault latch for the current episode
 
     # ---- gym-ish API ----
@@ -103,22 +104,23 @@ class RealRobotEnv:
         print(f"  [ready] WARNING: arm not confirmed ready (err={ecode}, state={state})")
         return False
 
+    def _home_ward(self, q):
+        """Joint-space action that moves toward HOME_QPOS (clipped to [-1,1])."""
+        return np.clip((rrc.HOME_QPOS - q) / self.action_scale, -1.0, 1.0).astype(np.float32)
+
     def _recover(self):
-        """Clear a collision/overspeed/servo fault and re-home WITHOUT ending the
-        episode, so the episode keeps its FIXED length. Mirrors reset()'s home move:
-        position mode -> blocking home -> back to servo-streaming mode."""
+        """Clear a collision/overspeed/servo fault by re-enabling the servo IN PLACE
+        (NO teleport), then LATCH home-steering so the following steps bring the arm
+        back to HOME_QPOS SMOOTHLY through the normal control loop. A blocking home
+        move would teleport the camera view -> a hard image jump in the recorded
+        frames; steering home gradually keeps the frame sequence continuous. The
+        episode keeps its FIXED length via the step counter."""
         try:
             self.arm.clean_error(); self.arm.clean_warn()
         except Exception:
             pass
-        self._ensure_ready(mode=0)
-        try:
-            self.arm.set_servo_angle(angle=rrc.HOME_QPOS.tolist(), speed=0.35,
-                                     is_radian=True, wait=True)
-        except Exception:
-            pass
-        time.sleep(0.2)
-        self._ensure_ready(mode=1)             # back to servo mode for the episode
+        self._ensure_ready(mode=1)             # re-enable servo mode in place (no motion)
+        self._homing = True                    # subsequent steps steer home smoothly
         self._prev_action[:] = 0.0
 
     def reset(self):
@@ -136,6 +138,7 @@ class RealRobotEnv:
         self._frames = None
         self._ct = 0
         self._fault_count = 0
+        self._homing = False
         self._stopped = False
         return self._obs()
 
@@ -157,8 +160,15 @@ class RealRobotEnv:
         # end the episode early. `act` becomes the actual EXECUTED action.
         lo = rrc.SAFE_LOW + self.safe_margin
         hi = rrc.SAFE_HIGH - self.safe_margin
-        if not (bool(np.all(ee >= lo)) and bool(np.all(ee <= hi))):
-            act = np.clip((rrc.HOME_QPOS - q) / self.action_scale, -1.0, 1.0)   # steer home
+        if self._homing:
+            # post-fault recovery: keep steering home SMOOTHLY (one action_scale step
+            # per control tick) until back near HOME_QPOS, then hand control back to
+            # the policy. No teleport -> the recorded frames change gradually.
+            act = self._home_ward(q)
+            if float(np.linalg.norm(q - rrc.HOME_QPOS)) < 0.10:
+                self._homing = False
+        elif not (bool(np.all(ee >= lo)) and bool(np.all(ee <= hi))):
+            act = self._home_ward(q)                                            # safe-zone steer
             print(f"  [SAFETY] TCP {np.round(ee,3)} near/left safe zone - steering home (episode continues)")
 
         # Expose the EXECUTED action (post EMA + safety override) so the actor stores
@@ -190,7 +200,7 @@ class RealRobotEnv:
                 self._stopped = True; done = True
             else:
                 print(f"  [FAULT] recovering #{self._fault_count}/{self.max_faults} "
-                      f"(re-home, episode continues)")
+                      f"(re-enable + smooth home-steer, episode continues)")
                 self._recover()
 
         # pace control loop
